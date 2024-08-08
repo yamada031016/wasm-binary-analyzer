@@ -1,4 +1,6 @@
 build.zig.zon
-/zig-out/
-/zig-cache/
+zig-out
+zig-out/
+zig-cache
+zig-cache/
 *.wasm
