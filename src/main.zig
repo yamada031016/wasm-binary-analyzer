@@ -23,7 +23,7 @@ pub fn main() !void {
     var buf: [4096]u8 = undefined;
     if (utils.readFileAll(file_path, &buf)) |size| {
         var Wasm = wasm.Wasm.init(&buf, size);
-        try Wasm.analyzeSection(.Memory);
+        try Wasm.analyzeSection(.Export);
     } else |err| {
         std.debug.print("{s}", .{@errorName(err)});
     }

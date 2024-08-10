@@ -67,45 +67,109 @@ pub const Wasm = struct {
         const section = try self.getSize(sec);
         self.pos += 1 + section.byte_width; // idとサイズのバイト数分進める
 
-        var tmp = [_]u8{0} ** 4;
-        for (self.data[self.pos..], 0..) |val, j| {
-            tmp[j] = val;
-            if (val < 128) {
-                self.pos += j + 1; // code count分進める
-                break;
-            }
-        }
-        const cnt = leb128.decodeLEB128(&tmp); // codeの数
-        std.debug.print("{}個のcodeがあります.\n", .{cnt});
-
-        var code: WasmSectionSize = undefined;
-        for (0..cnt) |i| {
-            code = c.getCodeSize(self.data, self.size, self.pos);
-            std.debug.print("({:0>2}) size: {} bytes\n", .{ i + 1, code.size });
-            self.pos += code.byte_width;
-
-            const local_var_cnt = utils.getValCounts(self.data, self.pos);
-            const local_var_width = calcWidth: {
-                var _cnt = local_var_cnt;
-                var j: usize = 1;
-                while (_cnt > 128) : (j += 1) {
-                    _cnt /= 128;
+        switch(sec) {
+            .Memory => {
+                const cnt = self.calcLEB128Data();
+                std.debug.print("Memory section size: {}.\nMemory Number: {}\n", .{section.size, cnt});
+                for (0..cnt) |_| {
+                    const mem_min_size = self.calcLEB128Data();
+                    const mem_max_size = self.calcLEB128Data();
+                    std.debug.print("Memory size: {} to {}\n", .{mem_min_size, mem_max_size});
                 }
-                break :calcWidth j;
-            };
-            self.pos += local_var_width;
-            for (0..local_var_cnt) |_| {
-                for (self.data[self.pos..], 1..) |val, k| {
+            },
+            .Import => {
+                const import_count = self.calcLEB128Data();
+                std.debug.print("Section size: {}.\nNumber of imports: {}\n", .{section.size, import_count});
+                for (0..import_count) |_| {
+                    const module_name_length = self.calcLEB128Data();
+                    const module_name = name:{
+                        var tmp:[32]u8 = undefined;
+                        for (self.data[self.pos..self.pos+module_name_length], 0..) |char, i| {
+                            tmp[i] = char;
+                            self.pos+=1;
+                        }
+                    break :name &tmp;
+                    };
+                    const target_name_length = self.calcLEB128Data();
+                    const target_name = name:{
+                        var tmp:[32]u8 = undefined;
+                        for (self.data[self.pos..self.pos+target_name_length], 0..) |char, i| {
+                            tmp[i] = char;
+                            self.pos+=1;
+                        }
+                    break :name &tmp;
+                    };
+                    std.debug.print("{s}.{s}\n", .{module_name, target_name});
+                    const target_section = self.calcLEB128Data();
+                    const target_section_id = self.calcLEB128Data();
+                    std.debug.print("{s}[{}]\n", .{WasmSection.init(target_section+1).asText(), target_section_id});
+                }
+            },
+            .Export => {
+                const export_count = self.calcLEB128Data();
+                std.debug.print("Section size: {}.\nNumber of imports: {}\n", .{section.size, export_count});
+                for (0..export_count) |_| {
+                    const export_name_length = self.calcLEB128Data();
+                    const export_name = name:{
+                        var tmp:[32]u8 = undefined;
+                        for (self.data[self.pos..self.pos+export_name_length], 0..) |char, i| {
+                            tmp[i] = char;
+                            self.pos+=1;
+                        }
+                    break :name &tmp;
+                    };
+                    std.debug.print("{s}\n", .{export_name});
+                    const target_section = self.calcLEB128Data();
+                    const target_section_id = self.calcLEB128Data();
+                    std.debug.print("{s}[{}]\n", .{WasmSection.init(target_section+1).asText(), target_section_id});
+                }
+
+            },
+            .Code => {
+                var tmp = [_]u8{0} ** 4;
+                for (self.data[self.pos..], 0..) |val, j| {
+                    tmp[j] = val;
                     if (val < 128) {
-                        self.pos += k; // ローカル変数のサイズのバイト幅だけ進める(最大u32幅)
+                        self.pos += j + 1; // code count分進める
                         break;
                     }
                 }
-                self.pos += 1; // valtype分進める
-            }
 
-            // try self.runtime.execute(self.data[self.pos..]);
-            self.pos += code.size + code.byte_width;
+                const cnt = leb128.decodeLEB128(&tmp); // codeの数
+                std.debug.print("{}個のcodeがあります.\n", .{cnt});
+
+                var code: WasmSectionSize = undefined;
+                for (0..cnt) |i| {
+                    code = c.getCodeSize(self.data, self.size, self.pos);
+                    std.debug.print("({:0>2}) size: {} bytes\n", .{ i + 1, code.size });
+                    self.pos += code.byte_width;
+
+                    const local_var_cnt = utils.getValCounts(self.data, self.pos);
+                    const local_var_width = calcWidth: {
+                        var _cnt = local_var_cnt;
+                        var j: usize = 1;
+                        while (_cnt > 128) : (j += 1) {
+                            _cnt /= 128;
+                        }
+                        break :calcWidth j;
+                    };
+                    self.pos += local_var_width;
+                    for (0..local_var_cnt) |_| {
+                        for (self.data[self.pos..], 1..) |val, k| {
+                            if (val < 128) {
+                                self.pos += k; // ローカル変数のサイズのバイト幅だけ進める(最大u32幅)
+                                break;
+                            }
+                        }
+                        self.pos += 1; // valtype分進める
+                    }
+
+                    // try self.runtime.execute(self.data[self.pos..]);
+                    self.pos += code.size + code.byte_width;
+                }
+
+            },
+            else => {},
         }
     }
 
@@ -147,6 +211,18 @@ pub const Wasm = struct {
         } else {
             return WasmError.SectionNotFound;
         }
+    }
+
+    fn calcLEB128Data(self: *Wasm) usize {
+        var tmp = [_]u8{0} ** 4;
+        for (self.data[self.pos..], 0..) |val, j| {
+            tmp[j] = val;
+            if (val < 128) {
+                self.pos += j + 1; // code count分進める
+                break;
+            }
+        }
+        return leb128.decodeLEB128(&tmp); // codeの数
     }
 };
 
@@ -194,62 +270,7 @@ const WasmSection = enum(u4) {
     }
 };
 
-// 以下、旧版の関数たち
-// 多くがWasm構造体に移植された
-// 念の為残しておく
-pub fn analyzeWasm(data: []u8, file_path: []const u8) !void {
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("{s}\t\tWasm version 0x{x}\n\n", .{ file_path, data[4] });
-
-    // wasmのバイナリフォーマットのmagicナンバーやバージョン(8 bytes)を省いた位置を初期位置とする
-    var pos: usize = 8;
-    for (0..13) |id| {
-        if (getSectionSize(data, id, pos)) |section_struct| {
-            pos += section_struct.size + 1 + section_struct.byte_width;
-            try stdout.print("({d:0>2}) {s}\tsize: {d:0>2} bytes\n", .{ id, WasmSection.init(id).asText(), section_struct.size });
-        } else |err| {
-            switch (err) {
-                WasmError.SectionNotFound => {
-                    try stdout.print("({d:0>2}) {s}\tsize: {d:0>2} bytes\n", .{ id, WasmSection.init(id).asText(), 0 });
-                },
-                else => unreachable,
-            }
-        }
-    }
-    try bw.flush();
-}
-
 pub const WasmSectionSize = struct {
     size: usize,
     byte_width: usize,
 };
-
-// idで指定されたセクションのサイズを取得
-// wasm binaryではidの次の数値がサイズを表している. 1-4bytes幅で可変長
-// posはsection idの位置を想定している
-// data: Wasm binary, max: wasm binary size, id: section id (0-12)
-// pos: starting position for reading wasm binary
-pub fn getSectionSize(data: []u8, id: usize, pos: usize) WasmError!WasmSectionSize {
-    var section_size = WasmSectionSize{ .size = 0, .byte_width = 0 };
-    if (id == data[pos]) {
-        const s = get_section_size: {
-            var tmp = [_]u8{0} ** 4;
-            for (data[pos + 1 ..], 0..) |val, j| {
-                tmp[j] = val;
-                if (val < 128) {
-                    section_size.byte_width = j + 1;
-                    break;
-                }
-            }
-            break :get_section_size &tmp;
-        };
-        section_size.size = leb128.decodeLEB128(@constCast(s));
-        return section_size;
-    } else {
-        return WasmError.SectionNotFound;
-    }
-    return WasmError.SectionNotFound;
-}
