@@ -22,8 +22,22 @@ pub fn main() !void {
 
     var buf: [4096]u8 = undefined;
     if (utils.readFileAll(file_path, &buf)) |size| {
-        var Wasm = wasm.Wasm.init(&buf, size);
-        try Wasm.analyzeSection(.Export);
+        var Wasm = wasm.Wasm.init(try std.heap.page_allocator.dupe(u8, buf[0..size]), size);
+
+        if (Wasm.analyzeSection(.Type)) |typeInfo| {
+            for (0..typeInfo.len) |i| {
+                std.debug.print("type info: {any}\n", .{typeInfo[i]});
+            }
+        } else |_| {}
+        if (Wasm.analyzeSection(.Memory)) |mem| {
+            std.debug.print("mem info: {any}\n", .{mem[0]});
+        } else |_| {}
+        if (Wasm.analyzeSection(.Export)) |exp| {
+            std.debug.print("Export: {any}\n", .{exp});
+        } else |_| {}
+        if (Wasm.analyzeSection(.Import)) |imp| {
+            std.debug.print("Import: {any}\n", .{imp});
+        } else |_| {}
     } else |err| {
         std.debug.print("{s}", .{@errorName(err)});
     }

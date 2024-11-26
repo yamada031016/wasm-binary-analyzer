@@ -38,7 +38,7 @@ pub fn analyzeCodeSection(data: []u8, size: usize) !void {
     const cnt = leb128.decodeLEB128(&tmp); // codeの数
     try stdout.print("{}個のcodeがあります.\n", .{cnt});
 
-    var code: wasm.WasmSectionSize = undefined;
+    var code: wasm.SectionSize = undefined;
     var first_pos: usize = pos; // code sizeの位置を指している
     for (0..cnt) |i| {
         code = getCodeSize(data, size, pos);
@@ -54,8 +54,8 @@ pub fn analyzeCodeSection(data: []u8, size: usize) !void {
     try bw.flush();
 }
 
-pub fn getCodeSize(data: []u8, size: usize, pos: usize) wasm.WasmSectionSize {
-    var code_section = wasm.WasmSectionSize{ .size = 0, .byte_width = 0 };
+pub fn getCodeSize(data: []u8, size: usize, pos: usize) wasm.SectionSize {
+    var code_section = wasm.SectionSize{ .size = 0, .byte_width = 0 };
     if (pos + 3 > size) {
         @panic("out of binary data.");
     }

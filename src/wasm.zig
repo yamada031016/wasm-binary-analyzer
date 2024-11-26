@@ -4,6 +4,8 @@ const leb128 = @import("leb128.zig");
 const Runtime = @import("runtime.zig").Runtime;
 const c = @import("code.zig");
 const utils = @import("utils.zig");
+const s = @import("section_info.zig");
+const Section = s.Section;
 
 // Wasmファイルの読み取りに関する構造体
 pub const Wasm = struct {
@@ -12,22 +14,25 @@ pub const Wasm = struct {
     size: usize,
     pos: usize = 0,
 
-    pub fn init(data: []u8, size: usize) *Wasm {
-        return @constCast(&Wasm{
+    pub fn init(data: []u8, size: usize) Wasm {
+        return Wasm{
             .data = data,
             .size = size,
             .runtime = Runtime.init(data),
-        });
+        };
     }
 
     // secで指定されたセクションまで読み進める
-    fn proceedToSection(self: *Wasm, sec: WasmSection) void {
+    fn proceedToSection(self: *Wasm, sec: Section) void {
         self.pos = 8;
-        if (sec == WasmSection.Type)
+        if (sec == Section.Type)
             return;
+        // std.debug.print("{}:{any}\n", .{ @intFromEnum(sec), self.data[0 .. self.pos + 20] });
 
         for (0..@intFromEnum(sec)) |id| {
+            // std.debug.print("before: {}:{any}\n", .{ (id), self.data[self.pos .. self.pos + 20] });
             if (self.getSize(@enumFromInt(id))) |section| {
+                std.debug.print("{any} found!\n", .{@as(Section, @enumFromInt(id))});
                 self.pos += section.size + 1 + section.byte_width;
             } else |err| {
                 switch (err) {
@@ -35,6 +40,11 @@ pub const Wasm = struct {
                     else => unreachable,
                 }
             }
+        }
+        if (@intFromEnum(sec) == self.data[self.pos]) {
+            std.debug.print("Finaly,  {any} found!\n", .{sec});
+        } else {
+            std.debug.print("hoge: {}\n", .{self.data[self.pos]});
         }
     }
 
@@ -60,70 +70,127 @@ pub const Wasm = struct {
         }
     }
 
-    // コードセクションを解析する
-    pub fn analyzeSection(self: *Wasm, sec: WasmSection) !void {
+    pub fn analyzeSection(self: *Wasm, comptime sec: Section) !switch (sec) {
+        .Type => []s.TypeSecInfo,
+        .Memory => []s.MemorySecInfo,
+        else => void,
+    } {
+        // std.debug.print("{any}\n", .{self.data[0..10]});
+        // defer std.debug.print("{any}\n", .{self.data[0..10]});
         self.proceedToSection(sec);
 
-        const section = try self.getSize(sec);
+        const section = self.getSize(sec) catch |err| switch (err) {
+            WasmError.SectionNotFound => {
+                std.debug.print("{s} not found.\n", .{sec.asText()});
+                return err;
+            },
+        };
+
         self.pos += 1 + section.byte_width; // idとサイズのバイト数分進める
 
-        switch(sec) {
-            .Memory => {
-                const cnt = self.calcLEB128Data();
-                std.debug.print("Memory section size: {}.\nMemory Number: {}\n", .{section.size, cnt});
-                for (0..cnt) |_| {
-                    const mem_min_size = self.calcLEB128Data();
-                    const mem_max_size = self.calcLEB128Data();
-                    std.debug.print("Memory size: {} to {}\n", .{mem_min_size, mem_max_size});
+        switch (sec) {
+            .Type => {
+                const cnt = try self.calcLEB128Data(); // number of function types
+                std.debug.print("\nFunction types found: {}\n", .{cnt});
+                var _typeInfo: [32]s.TypeSecInfo = undefined;
+                for (0..cnt) |j| {
+                    _ = try self.calcLEB128Data(); // expect 60: indicate function type below.
+                    const args_len = try self.calcLEB128Data();
+                    var args: [32]s.TypeSecInfo.TypeEnum = undefined;
+                    if (args_len == 0) {
+                        args[0] = .wasm_void;
+                    } else {
+                        for (0..args_len) |i| {
+                            args[i] = switch (try self.calcLEB128Data()) {
+                                0x0 => .wasm_void,
+                                0x7e => .wasm_i64,
+                                0x7f => .wasm_i32,
+                                else => .wasm_unknown,
+                            };
+                        }
+                    }
+                    const return_len = try self.calcLEB128Data();
+                    var returns: [32]s.TypeSecInfo.TypeEnum = undefined;
+                    if (return_len == 0) {
+                        returns[0] = .wasm_void;
+                    } else {
+                        for (0..return_len) |i| {
+                            returns[i] = switch (try self.calcLEB128Data()) {
+                                0x0 => .wasm_void,
+                                0x7e => .wasm_i64,
+                                0x7f => .wasm_i32,
+                                else => .wasm_unknown,
+                            };
+                        }
+                    }
+                    _typeInfo[j] = .{
+                        .args_type = try std.heap.page_allocator.dupe(s.TypeSecInfo.TypeEnum, args[0..args_len]),
+                        .result_type = try std.heap.page_allocator.dupe(s.TypeSecInfo.TypeEnum, returns[0..return_len]),
+                    };
                 }
+                return try std.heap.page_allocator.dupe(s.TypeSecInfo, _typeInfo[0..cnt]);
+            },
+            .Memory => {
+                const cnt = try self.calcLEB128Data();
+                std.debug.print("\nMemory found: {}\n", .{cnt});
+                var buf: [32]s.MemorySecInfo = undefined;
+                for (0..cnt) |i| {
+                    const mem_min_size = try self.calcLEB128Data();
+                    const mem_max_size = try self.calcLEB128Data();
+                    buf[i] = .{
+                        .min_size = mem_min_size,
+                        .max_size = mem_max_size,
+                    };
+                    std.debug.print("Memory size: {} to {}\n", .{ mem_min_size, mem_max_size });
+                }
+                return try std.heap.page_allocator.dupe(s.MemorySecInfo, buf[0..cnt]);
             },
             .Import => {
-                const import_count = self.calcLEB128Data();
-                std.debug.print("Section size: {}.\nNumber of imports: {}\n", .{section.size, import_count});
+                const import_count = try self.calcLEB128Data();
+                std.debug.print("\nImports found: {}\n", .{import_count});
                 for (0..import_count) |_| {
-                    const module_name_length = self.calcLEB128Data();
-                    const module_name = name:{
-                        var tmp:[32]u8 = undefined;
-                        for (self.data[self.pos..self.pos+module_name_length], 0..) |char, i| {
+                    const module_name_length = try self.calcLEB128Data();
+                    const module_name = name: {
+                        var tmp: [32]u8 = undefined;
+                        for (self.data[self.pos .. self.pos + module_name_length], 0..) |char, i| {
                             tmp[i] = char;
-                            self.pos+=1;
+                            self.pos += 1;
                         }
-                    break :name &tmp;
+                        break :name &tmp;
                     };
-                    const target_name_length = self.calcLEB128Data();
-                    const target_name = name:{
-                        var tmp:[32]u8 = undefined;
-                        for (self.data[self.pos..self.pos+target_name_length], 0..) |char, i| {
+                    const target_name_length = try self.calcLEB128Data();
+                    const target_name = name: {
+                        var tmp: [32]u8 = undefined;
+                        for (self.data[self.pos .. self.pos + target_name_length], 0..) |char, i| {
                             tmp[i] = char;
-                            self.pos+=1;
+                            self.pos += 1;
                         }
-                    break :name &tmp;
+                        break :name &tmp;
                     };
-                    std.debug.print("{s}.{s}\n", .{module_name, target_name});
-                    const target_section = self.calcLEB128Data();
-                    const target_section_id = self.calcLEB128Data();
-                    std.debug.print("{s}[{}]\n", .{WasmSection.init(target_section+1).asText(), target_section_id});
+                    std.debug.print("{s}.{s}\t\t\t", .{ module_name, target_name });
+                    const target_section = try self.calcLEB128Data();
+                    const target_section_id = try self.calcLEB128Data();
+                    std.debug.print("{s}[{}]\n", .{ Section.init(target_section + 1).asText(), target_section_id });
                 }
             },
             .Export => {
-                const export_count = self.calcLEB128Data();
-                std.debug.print("Section size: {}.\nNumber of imports: {}\n", .{section.size, export_count});
+                const export_count = try self.calcLEB128Data();
+                std.debug.print("\nExports found: {}\n", .{export_count});
                 for (0..export_count) |_| {
-                    const export_name_length = self.calcLEB128Data();
-                    const export_name = name:{
-                        var tmp:[32]u8 = undefined;
-                        for (self.data[self.pos..self.pos+export_name_length], 0..) |char, i| {
+                    const export_name_length = try self.calcLEB128Data();
+                    const export_name = name: {
+                        var tmp: [32]u8 = undefined;
+                        for (self.data[self.pos .. self.pos + export_name_length], 0..) |char, i| {
                             tmp[i] = char;
-                            self.pos+=1;
+                            self.pos += 1;
                         }
-                    break :name &tmp;
+                        break :name &tmp;
                     };
-                    std.debug.print("{s}\n", .{export_name});
-                    const target_section = self.calcLEB128Data();
-                    const target_section_id = self.calcLEB128Data();
-                    std.debug.print("{s}[{}]\n", .{WasmSection.init(target_section+1).asText(), target_section_id});
+                    std.debug.print("{s}\t\t\t", .{export_name});
+                    const target_section = try self.calcLEB128Data();
+                    const target_section_id = try self.calcLEB128Data();
+                    std.debug.print("{s}[{}]\n", .{ Section.init(target_section + 1).asText(), target_section_id });
                 }
-
             },
             .Code => {
                 var tmp = [_]u8{0} ** 4;
@@ -138,7 +205,7 @@ pub const Wasm = struct {
                 const cnt = leb128.decodeLEB128(&tmp); // codeの数
                 std.debug.print("{}個のcodeがあります.\n", .{cnt});
 
-                var code: WasmSectionSize = undefined;
+                var code: SectionSize = undefined;
                 for (0..cnt) |i| {
                     code = c.getCodeSize(self.data, self.size, self.pos);
                     std.debug.print("({:0>2}) size: {} bytes\n", .{ i + 1, code.size });
@@ -167,7 +234,6 @@ pub const Wasm = struct {
                     // try self.runtime.execute(self.data[self.pos..]);
                     self.pos += code.size + code.byte_width;
                 }
-
             },
             else => {},
         }
@@ -175,7 +241,7 @@ pub const Wasm = struct {
 
     // コードを実行する
     fn execute(self: *Wasm, cnt: usize) !void {
-        var code: WasmSectionSize = undefined;
+        var code: SectionSize = undefined;
         var first_pos: usize = self.pos; // code sizeの位置を指している
         std.debug.print("{any}", .{self.data});
         for (0..cnt) |i| {
@@ -191,11 +257,10 @@ pub const Wasm = struct {
         }
     }
 
-    // セクションサイズなどを計算する
-    fn getSize(self: *Wasm, sec: WasmSection) !WasmSectionSize {
-        var section_size = WasmSectionSize{ .size = 0, .byte_width = 0 };
+    fn getSize(self: *Wasm, sec: Section) !SectionSize {
+        var section_size = SectionSize{ .size = 0, .byte_width = 0 };
         if (@intFromEnum(sec) == self.data[self.pos]) {
-            const s = get_section_size: {
+            const section = get_section_size: {
                 var tmp = [_]u8{0} ** 4;
                 for (self.data[self.pos + 1 ..], 0..) |val, j| {
                     tmp[j] = val;
@@ -206,23 +271,18 @@ pub const Wasm = struct {
                 }
                 break :get_section_size &tmp;
             };
-            section_size.size = leb128.decodeLEB128(@constCast(s));
+            section_size.size = leb128.decodeLEB128(@constCast(section));
             return section_size;
         } else {
             return WasmError.SectionNotFound;
         }
     }
 
-    fn calcLEB128Data(self: *Wasm) usize {
-        var tmp = [_]u8{0} ** 4;
-        for (self.data[self.pos..], 0..) |val, j| {
-            tmp[j] = val;
-            if (val < 128) {
-                self.pos += j + 1; // code count分進める
-                break;
-            }
-        }
-        return leb128.decodeLEB128(&tmp); // codeの数
+    fn calcLEB128Data(self: *Wasm) !u32 {
+        var buf = std.io.fixedBufferStream(self.data[self.pos..]);
+        const val = try std.leb.readULEB128(u32, buf.reader());
+        self.pos += buf.pos;
+        return val;
     }
 };
 
@@ -230,47 +290,7 @@ pub const WasmError = error{
     SectionNotFound,
 };
 
-const WasmSection = enum(u4) {
-    const Self = @This();
-
-    Custom = 0,
-    Type = 1,
-    Import = 2,
-    Function = 3,
-    Table = 4,
-    Memory = 5,
-    Global = 6,
-    Export = 7,
-    Start = 8,
-    Element = 9,
-    Code = 10,
-    Data = 11,
-    DataCount = 12,
-
-    pub fn init(id: usize) Self {
-        return @enumFromInt(id);
-    }
-
-    pub fn asText(self: WasmSection) []const u8 {
-        return switch (self) {
-            .Custom => "custom section",
-            .Type => "type section",
-            .Import => "import section",
-            .Function => "function section",
-            .Table => "table section",
-            .Memory => "memory section",
-            .Global => "global section",
-            .Export => "export section",
-            .Start => "start section",
-            .Element => "element section",
-            .Code => "code section",
-            .Data => "data section",
-            .DataCount => "data count section",
-        };
-    }
-};
-
-pub const WasmSectionSize = struct {
+pub const SectionSize = struct {
     size: usize,
     byte_width: usize,
 };
