@@ -73,6 +73,8 @@ pub const Wasm = struct {
     pub fn analyzeSection(self: *Wasm, comptime sec: Section) !switch (sec) {
         .Type => []s.TypeSecInfo,
         .Memory => []s.MemorySecInfo,
+        // .Import => []s.ImportSecInfo,
+        // .Export => []s.ExportSecInfo,
         else => void,
     } {
         // std.debug.print("{any}\n", .{self.data[0..10]});
@@ -82,7 +84,25 @@ pub const Wasm = struct {
         const section = self.getSize(sec) catch |err| switch (err) {
             WasmError.SectionNotFound => {
                 std.debug.print("{s} not found.\n", .{sec.asText()});
-                return err;
+                switch (sec) {
+                    .Type => {
+                        const dummy: [1]s.TypeSecInfo = undefined;
+                        return try std.heap.page_allocator.dupe(s.TypeSecInfo, dummy[0..0]);
+                    },
+                    .Memory => {
+                        const dummy: [1]s.MemorySecInfo = undefined;
+                        return try std.heap.page_allocator.dupe(s.MemorySecInfo, dummy[0..0]);
+                    },
+                    // .Import => {
+                    //     const dummy: [1]s.ImportSecInfo = undefined;
+                    //     return try std.heap.page_allocator.dupe(s.ImportSecInfo, dummy[0..0]);
+                    // },
+                    // .Export => {
+                    //     const dummy: [1]s.ExportSecInfo = undefined;
+                    //     return try std.heap.page_allocator.dupe(s.ExportSecInfo, dummy[0..0]);
+                    // },
+                    else => return err,
+                }
             },
         };
 

@@ -32,12 +32,12 @@ pub fn main() !void {
         if (Wasm.analyzeSection(.Memory)) |mem| {
             std.debug.print("mem info: {any}\n", .{mem[0]});
         } else |_| {}
-        if (Wasm.analyzeSection(.Export)) |exp| {
-            std.debug.print("Export: {any}\n", .{exp});
-        } else |_| {}
-        if (Wasm.analyzeSection(.Import)) |imp| {
-            std.debug.print("Import: {any}\n", .{imp});
-        } else |_| {}
+        // if (Wasm.analyzeSection(.Export)) |exp| {
+        //     std.debug.print("Export: {any}\n", .{exp});
+        // } else |_| {}
+        // if (Wasm.analyzeSection(.Import)) |imp| {
+        //     std.debug.print("Import: {any}\n", .{imp});
+        // } else |_| {}
     } else |err| {
         std.debug.print("{s}", .{@errorName(err)});
     }
